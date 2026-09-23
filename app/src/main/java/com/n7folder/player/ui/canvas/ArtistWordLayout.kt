@@ -4,8 +4,13 @@ import com.n7folder.player.data.Alphabet
 import kotlin.math.ln
 import kotlin.math.max
 
-/** Un mot du nuage ; [weight] (nombre de pistes) détermine sa taille. */
-class CloudWord(val key: String, val text: String, val weight: Int)
+/**
+ * Un mot du nuage ; [weight] (nombre de pistes) détermine sa taille.
+ * [coverUriString] : Uri (sous forme de texte, pour rester sans dépendance Android dans ce fichier)
+ * d'une pochette locale déjà connue pour cet artiste, révélée progressivement au zoom — voir
+ * N7ZoomableSurface. Null si aucune pochette locale n'est connue (le mot reste alors du texte pur).
+ */
+class CloudWord(val key: String, val text: String, val weight: Int, val coverUriString: String? = null)
 
 /** Mot positionné, en coordonnées "monde" (pixels à l'échelle 1). */
 class PlacedWord(
@@ -17,7 +22,8 @@ class PlacedWord(
     val fontPx: Float,
     val width: Float,
     val height: Float,
-    val row: Int
+    val row: Int,
+    val coverUriString: String? = null
 )
 
 /**
@@ -160,7 +166,8 @@ object ArtistWordLayout {
                         fontPx = p.font,
                         width = p.width,
                         height = p.font * LINE_FACTOR,
-                        row = rowTops.size
+                        row = rowTops.size,
+                        coverUriString = p.word.coverUriString
                     )
                 )
                 val letterIndex = Alphabet.LETTERS.indexOf(Alphabet.letterOf(p.word.key))

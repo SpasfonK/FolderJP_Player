@@ -18,14 +18,15 @@ import com.n7folder.player.data.CoverArtManager
 import java.io.File
 
 /**
- * Pochette embarquée dans les fichiers audio, extraite à la demande (2e temps du chargement des
- * pochettes) : null tant que l'extraction n'est pas terminée, ou si le fichier n'en contient pas.
+ * Pochette résolue en dehors des images locales : tags embarqués, puis recherche en ligne
+ * (TheAudioDB/Last.fm) si la chaîne locale n'a rien donné. `null` tant que la résolution n'est pas
+ * terminée, ou si rien n'a été trouvé nulle part.
  */
 @Composable
-fun rememberEmbeddedCover(key: String, trackUri: Uri?): File? {
+fun rememberResolvedCover(key: String, trackUri: Uri?, artist: String, album: String): File? {
     val appContext = LocalContext.current.applicationContext
-    val cover by produceState<File?>(initialValue = null, key, trackUri) {
-        value = if (trackUri == null) null else CoverArtManager.from(appContext).embeddedCoverFor(key, trackUri)
+    val cover by produceState<File?>(initialValue = null, key, trackUri, artist, album) {
+        value = CoverArtManager.from(appContext).coverFor(key, trackUri, artist, album)
     }
     return cover
 }
@@ -44,9 +45,12 @@ fun CoverPlaceholder(modifier: Modifier = Modifier) {
     }
 }
 
-/** Pochette d'un album : image locale d'abord, sinon pochette intégrée à la première piste. */
+/**
+ * Pochette d'un album : image locale d'abord, sinon tags embarqués de la première piste, sinon
+ * recherche en ligne par artiste/album (voir [CoverArtManager]).
+ */
 @Composable
-fun AlbumArt(album: AlbumSummary, modifier: Modifier = Modifier) {
+fun AlbumArt(album: AlbumSummary, artistName: String, modifier: Modifier = Modifier) {
     val local = album.coverUri
     if (local != null) {
         AsyncImage(
@@ -56,13 +60,15 @@ fun AlbumArt(album: AlbumSummary, modifier: Modifier = Modifier) {
             contentScale = ContentScale.Crop
         )
     } else {
-        val embedded = rememberEmbeddedCover(
+        val resolved = rememberResolvedCover(
             key = "album:" + album.key.artistKey + "|" + album.key.albumKey,
-            trackUri = album.tracks.firstOrNull()?.uri
+            trackUri = album.tracks.firstOrNull()?.uri,
+            artist = artistName,
+            album = album.name
         )
-        if (embedded != null) {
+        if (resolved != null) {
             AsyncImage(
-                model = embedded,
+                model = resolved,
                 contentDescription = null,
                 modifier = modifier,
                 contentScale = ContentScale.Crop
@@ -73,9 +79,9 @@ fun AlbumArt(album: AlbumSummary, modifier: Modifier = Modifier) {
     }
 }
 
-/** Pochette de la piste en cours de lecture (lecteur, mini-lecteur). */
+/** Pochette de la piste en cours de lecture (mini-lecteur, écran complet). */
 @Composable
-fun TrackArtwork(artworkUri: Uri?, trackUri: Uri?, modifier: Modifier = Modifier) {
+fun TrackArtwork(artworkUri: Uri?, trackUri: Uri?, artist: String, album: String, modifier: Modifier = Modifier) {
     if (artworkUri != null) {
         AsyncImage(
             model = artworkUri,
@@ -84,10 +90,15 @@ fun TrackArtwork(artworkUri: Uri?, trackUri: Uri?, modifier: Modifier = Modifier
             contentScale = ContentScale.Crop
         )
     } else {
-        val embedded = rememberEmbeddedCover(key = "track:" + trackUri.toString(), trackUri = trackUri)
-        if (embedded != null) {
+        val resolved = rememberResolvedCover(
+            key = "np:" + artist + "|" + album,
+            trackUri = trackUri,
+            artist = artist,
+            album = album
+        )
+        if (resolved != null) {
             AsyncImage(
-                model = embedded,
+                model = resolved,
                 contentDescription = null,
                 modifier = modifier,
                 contentScale = ContentScale.Crop

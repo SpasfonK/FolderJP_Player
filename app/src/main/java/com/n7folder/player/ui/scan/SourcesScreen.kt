@@ -19,13 +19,19 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.n7folder.player.data.MusicSource
+import com.n7folder.player.data.RemoteCoverProvider
 import com.n7folder.player.data.UnavailableReason
 import com.n7folder.player.ui.common.BackHeader
 import com.n7folder.player.ui.common.formatCount
@@ -75,6 +81,8 @@ fun SourcesScreen(
                 }
             }
 
+            item(key = "h:remote-cover") { RemoteCoverToggle() }
+
             if (message != null) {
                 item(key = "h:message") {
                     Text(text = message, color = MaterialTheme.colorScheme.error)
@@ -107,6 +115,41 @@ fun SourcesScreen(
                 item(key = "h:progress") { ProgressCard(state) }
             }
         }
+    }
+}
+
+/**
+ * Recherche en ligne des pochettes manquantes (TheAudioDB, puis Last.fm si une clé est configurée),
+ * en dernier recours quand ni un fichier local ni une image intégrée n'ont donné de résultat.
+ */
+@Composable
+private fun RemoteCoverToggle() {
+    val context = LocalContext.current
+    var enabled by remember { mutableStateOf(RemoteCoverProvider.isEnabled(context)) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = "Pochettes manquantes en ligne", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                text = "Cherche une pochette (TheAudioDB) quand aucun fichier local ni tag intégré n'en a.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(
+            checked = enabled,
+            onCheckedChange = { value ->
+                enabled = value
+                RemoteCoverProvider.setEnabled(context, value)
+            }
+        )
     }
 }
 

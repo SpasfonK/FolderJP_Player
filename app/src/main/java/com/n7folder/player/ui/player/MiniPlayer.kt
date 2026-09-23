@@ -65,6 +65,8 @@ fun MiniPlayer(
             TrackArtwork(
                 artworkUri = state.artworkUri,
                 trackUri = state.trackUri,
+                artist = state.artist,
+                album = state.album,
                 modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp))
             )
             Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {

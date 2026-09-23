@@ -89,6 +89,8 @@ fun FullPlayerScreen(
         TrackArtwork(
             artworkUri = state.artworkUri,
             trackUri = state.trackUri,
+            artist = state.artist,
+            album = state.album,
             modifier = Modifier
                 .fillMaxWidth(0.86f)
                 .aspectRatio(1f)

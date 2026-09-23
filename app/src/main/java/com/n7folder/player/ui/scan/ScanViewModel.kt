@@ -8,8 +8,10 @@ import androidx.lifecycle.viewModelScope
 import com.n7folder.player.data.AlbumKey
 import com.n7folder.player.data.Alphabet
 import com.n7folder.player.data.ArtistSummary
+import com.n7folder.player.data.CoverHint
 import com.n7folder.player.data.FileScanner
 import com.n7folder.player.data.FolderTree
+import com.n7folder.player.data.LibraryCache
 import com.n7folder.player.data.LibraryIndex
 import com.n7folder.player.data.MusicSource
 import com.n7folder.player.data.ScanEvent
@@ -64,11 +66,20 @@ data class ScanUiState(
  * Threads : les fonctions publiques s'exécutent sur le thread principal ; les accès disque/binder
  * (SourceStore) passent par Dispatchers.IO ; le scan est collecté sur Dispatchers.Default, donc la
  * fusion des lots et la construction des instantanés n'occupent jamais le thread principal.
+ *
+ * Bibliothèque figée : la liste des pistes déjà analysées est mise en cache sur le disque
+ * ([LibraryCache]). Au démarrage, si un cache existe, il est utilisé tel quel — aucune nouvelle
+ * analyse des dossiers (SAF) n'est déclenchée, même après un redémarrage du téléphone. Seules trois
+ * actions explicites relancent une vraie analyse : "Réanalyser", l'ajout d'un nouveau dossier, et le
+ * changement d'un réglage qui change la façon dont les fichiers sont interprétés ("Ce dossier est un
+ * artiste", ou relier un dossier après reconnexion du stockage). Retirer un dossier, à l'inverse, ne
+ * relance rien : on filtre simplement la bibliothèque déjà en mémoire.
  */
 class ScanViewModel(application: Application) : AndroidViewModel(application) {
 
     private val store = SourceStore(application)
     private val scanner = FileScanner(application)
+    private val libraryCache = LibraryCache(application)
 
     private val _state = MutableStateFlow(ScanUiState())
     val state: StateFlow<ScanUiState> = _state.asStateFlow()
@@ -82,7 +93,13 @@ class ScanViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val sources = withContext(Dispatchers.IO) { store.load() }
             _state.update { it.copy(sources = sources, loaded = true) }
-            startScan()
+            if (sources.isEmpty()) return@launch
+            val cached = withContext(Dispatchers.IO) { libraryCache.load(sources) }
+            if (cached != null) {
+                applyLibrary(cached.tracks, cached.covers, sources)
+            } else {
+                startScan() // premier lancement pour ces dossiers : pas de cache à restituer
+            }
         }
     }
 
@@ -129,14 +146,22 @@ class ScanViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Retire une source. Ne relance jamais d'analyse : la bibliothèque déjà chargée est filtrée. */
     fun removeSource(sourceId: String) {
         viewModelScope.launch {
             val sources = withContext(Dispatchers.IO) {
                 store.remove(sourceId)
                 store.load()
             }
+            val previous = _state.value.artists
+            val remainingTracks = tracksOf(previous).filter { it.sourceId != sourceId }
+            val roughCovers = coversOf(previous) // peut contenir des pochettes d'albums disparus : sans effet
             _state.update { it.copy(sources = sources) }
-            startScan()
+            applyLibrary(remainingTracks, roughCovers, sources)
+
+            // On persiste l'état réellement reconstruit : les pochettes orphelines en sont déjà écartées.
+            val fresh = _state.value.artists
+            withContext(Dispatchers.IO) { libraryCache.save(tracksOf(fresh), coversOf(fresh)) }
         }
     }
 
@@ -202,6 +227,60 @@ class ScanViewModel(application: Application) : AndroidViewModel(application) {
 
     // ------------------------------------------------------------------------------------------
 
+    private fun tracksOf(artists: List<ArtistSummary>): List<TrackEntry> = artists.flatMap { it.allTracks }
+
+    private fun coversOf(artists: List<ArtistSummary>): List<CoverHint> =
+        artists.flatMap { artist ->
+            artist.albums.mapNotNull { album -> album.coverUri?.let { CoverHint(album.key, it) } }
+        }
+
+    /**
+     * Reconstruit l'état de l'interface directement depuis une liste de pistes déjà connues
+     * (cache disque ou bibliothèque filtrée), sans passer par [FileScanner] : aucun accès SAF.
+     */
+    private suspend fun applyLibrary(tracks: List<TrackEntry>, covers: List<CoverHint>, sources: List<MusicSource>) {
+        val gen = generation.incrementAndGet()
+        scanJob?.cancel()
+        scanJob = null
+
+        val (artists, artistIndex, letters) = withContext(Dispatchers.Default) {
+            val index = LibraryIndex()
+            index.addBatch(tracks, covers)
+            val snapshot = index.snapshot()
+            val byKey = HashMap<String, ArtistSummary>(snapshot.size * 2)
+            val keys = ArrayList<String>(snapshot.size)
+            for (artist in snapshot) {
+                byKey[artist.key] = artist
+                keys.add(artist.key)
+            }
+            Triple(snapshot, byKey, Alphabet.countByLetter(keys))
+        }
+
+        val countBySource = HashMap<String, Int>()
+        for (track in tracks) countBySource[track.sourceId] = (countBySource[track.sourceId] ?: 0) + 1
+        val statuses: Map<String, SourceStatus> =
+            sources.associate { source -> source.id to SourceStatus.Done(countBySource[source.id] ?: 0, 0) }
+
+        // Écriture directe (pas via updateIfCurrent) : c'est ici que le nouveau scanId est défini.
+        _state.update {
+            it.copy(
+                statuses = statuses,
+                scanning = false,
+                filesFound = tracks.size,
+                dirsVisited = 0,
+                currentDir = "",
+                totalTracks = tracks.size,
+                artists = artists,
+                artistIndex = artistIndex,
+                letterCounts = letters,
+                libraryVersion = it.libraryVersion + 1,
+                elapsedMs = 0L,
+                message = null,
+                scanId = gen
+            )
+        }
+    }
+
     /** Écrit dans l'état seulement si le scan [gen] est toujours le scan courant (atomique). */
     private fun updateIfCurrent(gen: Int, transform: (ScanUiState) -> ScanUiState) {
         _state.update { current -> if (current.scanId == gen) transform(current) else current }
@@ -211,7 +290,7 @@ class ScanViewModel(application: Application) : AndroidViewModel(application) {
         val index = LibraryIndex() // confiné à cette coroutine
         var lastPublish = 0L
 
-        fun publish() {
+        fun publish(): List<ArtistSummary> {
             val artists = index.snapshot()
             val tracks = index.trackCount
             val byKey = HashMap<String, ArtistSummary>(artists.size * 2)
@@ -231,6 +310,7 @@ class ScanViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             lastPublish = SystemClock.elapsedRealtime()
+            return artists
         }
 
         fun setStatus(sourceId: String, status: SourceStatus) {
@@ -260,7 +340,7 @@ class ScanViewModel(application: Application) : AndroidViewModel(application) {
                         setStatus(event.source.id, SourceStatus.Done(event.files, event.skipped))
                     }
                     is ScanEvent.Finished -> {
-                        publish()
+                        val finalArtists = publish()
                         updateIfCurrent(gen) {
                             it.copy(
                                 scanning = false,
@@ -268,6 +348,10 @@ class ScanViewModel(application: Application) : AndroidViewModel(application) {
                                 currentDir = "",
                                 elapsedMs = event.elapsedMs
                             )
+                        }
+                        // Fige la bibliothèque : le prochain démarrage la restituera sans repasser par SAF.
+                        if (generation.get() == gen) {
+                            libraryCache.save(tracksOf(finalArtists), coversOf(finalArtists))
                         }
                     }
                 }

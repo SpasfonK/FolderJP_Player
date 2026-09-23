@@ -1,7 +1,12 @@
 package com.n7folder.player.ui.canvas
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
+import android.net.Uri
+import android.util.LruCache
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -32,6 +37,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.Velocity
@@ -63,6 +69,15 @@ private const val MIN_FLING_START = 200f
 private const val MIN_FLING_STOP = 30f
 private const val FLING_FRICTION = 3.2f
 
+/**
+ * Zoom sémantique progressif (n7player) : texte seul en dessous, vignette qui apparaît en fondu
+ * entre ces deux seuils, pleinement visible à partir de [ENTER_SCALE]. Uniquement les pochettes
+ * locales déjà connues (voir CloudScreen) — jamais de réseau pour l'ensemble du nuage à la fois.
+ */
+private const val REVEAL_SCALE = 1.6f
+private const val THUMB_TARGET_PX = 96
+private const val THUMB_CACHE_ENTRIES = 48
+
 private val QUIET_COLORS = intArrayOf(TextPrimary.toArgb(), TextSecondary.toArgb())
 private val LOUD_COLORS = intArrayOf(NeonCyan.toArgb(), NeonLime.toArgb(), NeonMagenta.toArgb())
 
@@ -92,6 +107,7 @@ fun N7ZoomableSurface(
     layoutDelayMs: Long = 0L
 ) {
     val density = LocalDensity.current
+    val resolver = LocalContext.current.contentResolver
     val scope = rememberCoroutineScope()
 
     val minFontPx = with(density) { 14.sp.toPx() }
@@ -115,6 +131,56 @@ fun N7ZoomableSurface(
 
     val drawPaint = remember {
         Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
+    }
+    val thumbPaint = remember { Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG) }
+    val thumbCache = remember { LruCache<String, Bitmap>(THUMB_CACHE_ENTRIES) }
+    val thumbLoading = remember { HashSet<String>() }
+    val thumbFailed = remember { HashSet<String>() }
+    // Compteur lu dans le dessin : sa seule fonction est de forcer un nouveau tracé quand une
+    // vignette termine de charger (thumbCache et les deux HashSet ci-dessus ne sont pas observés
+    // par Compose puisque ce sont des collections Java classiques, pas des états).
+    var thumbVersion by remember { mutableIntStateOf(0) }
+
+    /** Décode une petite vignette (≈ [THUMB_TARGET_PX] px) depuis une Uri SAF. Coûteux : IO uniquement. */
+    fun decodeThumbnail(uriString: String): Bitmap? = try {
+        resolver.openInputStream(Uri.parse(uriString))?.use { stream ->
+            val bytes = stream.readBytes()
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                null
+            } else {
+                var sample = 1
+                while (bounds.outWidth / (sample * 2) >= THUMB_TARGET_PX &&
+                    bounds.outHeight / (sample * 2) >= THUMB_TARGET_PX
+                ) {
+                    sample *= 2
+                }
+                val options = BitmapFactory.Options().apply { inSampleSize = sample }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            }
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Lance le chargement d'une vignette si elle n'est ni en cache, ni déjà en cours, ni en échec. */
+    fun ensureThumbnail(uriString: String) {
+        if (thumbCache.get(uriString) != null) return
+        if (uriString in thumbLoading || uriString in thumbFailed) return
+        thumbLoading.add(uriString)
+        scope.launch(Dispatchers.IO) {
+            val bitmap = decodeThumbnail(uriString)
+            withContext(Dispatchers.Main) {
+                thumbLoading.remove(uriString)
+                if (bitmap != null) {
+                    thumbCache.put(uriString, bitmap)
+                    thumbVersion++
+                } else {
+                    thumbFailed.add(uriString)
+                }
+            }
+        }
     }
 
     // --- géométrie ---------------------------------------------------------------------------
@@ -299,6 +365,9 @@ fun N7ZoomableSurface(
         val lastRow = current.lastRowAtOrBefore((size.height - oy) / s)
         val highlighted = focusIndex
         val range = maxFontPx - minFontPx
+        // Lecture pure : force ce Canvas à se redessiner quand une vignette termine de charger.
+        val revealed = s >= REVEAL_SCALE
+        if (thumbVersion < 0) return@Canvas
 
         drawIntoCanvas { canvas ->
             val target = canvas.nativeCanvas
@@ -316,6 +385,27 @@ fun N7ZoomableSurface(
                         else -> QUIET_COLORS[hash % QUIET_COLORS.size]
                     }
                     drawPaint.textSize = word.fontPx * s
+
+                    // Vignette locale, révélée en fondu à partir de REVEAL_SCALE, pleine à ENTER_SCALE.
+                    val coverKey = word.coverUriString
+                    if (revealed && coverKey != null) {
+                        ensureThumbnail(coverKey)
+                        val bitmap = thumbCache.get(coverKey)
+                        if (bitmap != null) {
+                            val alpha = ((s - REVEAL_SCALE) / (ENTER_SCALE - REVEAL_SCALE)).coerceIn(0f, 1f)
+                            val sizePx = word.height * s
+                            val gap = 6f * s
+                            val top = word.top * s + oy
+                            thumbPaint.alpha = (alpha * 255).toInt()
+                            target.drawBitmap(
+                                bitmap,
+                                null,
+                                RectF(screenX - sizePx - gap, top, screenX - gap, top + sizePx),
+                                thumbPaint
+                            )
+                        }
+                    }
+
                     target.drawText(word.text, screenX, word.baseline * s + oy, drawPaint)
                 }
                 row++

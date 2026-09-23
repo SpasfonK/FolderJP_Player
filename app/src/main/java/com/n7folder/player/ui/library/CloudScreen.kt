@@ -45,7 +45,12 @@ fun CloudScreen(
     var focusNonce by remember { mutableIntStateOf(0) }
 
     val words = remember(state.artists) {
-        state.artists.map { artist -> CloudWord(artist.key, artist.name, artist.trackCount) }
+        state.artists.map { artist ->
+            // Pochette locale connue (jamais de réseau ici : cette liste est calculée pour TOUS les
+            // artistes à chaque changement, et interroger une API pour chacun serait disproportionné).
+            val cover = artist.albums.firstOrNull { it.coverUri != null }?.coverUri?.toString()
+            CloudWord(artist.key, artist.name, artist.trackCount, cover)
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {

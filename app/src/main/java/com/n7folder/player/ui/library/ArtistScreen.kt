@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -21,6 +22,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.n7folder.player.data.AlbumSummary
@@ -79,6 +81,7 @@ fun ArtistScreen(
             items(artist.albums, key = { album -> album.key.albumKey }) { album ->
                 AlbumCard(
                     album = album,
+                    artistName = artist.name,
                     onOpen = { onOpenAlbum(album) },
                     onPlay = { onPlayAlbum(album, false) },
                     onShuffle = { onPlayAlbum(album, true) }
@@ -89,20 +92,25 @@ fun ArtistScreen(
 }
 
 @Composable
-private fun AlbumCard(album: AlbumSummary, onOpen: () -> Unit, onPlay: () -> Unit, onShuffle: () -> Unit) {
+private fun AlbumCard(album: AlbumSummary, artistName: String, onOpen: () -> Unit, onPlay: () -> Unit, onShuffle: () -> Unit) {
     Column(modifier = Modifier.fillMaxWidth()) {
         AlbumArt(
             album = album,
+            artistName = artistName,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
                 .clip(RoundedCornerShape(12.dp))
                 .clickable(onClick = onOpen)
         )
+        // Toujours visible, même sans pochette : c'est souvent la seule façon de savoir de quel
+        // dossier il s'agit. Hauteur réservée pour deux lignes afin que la grille reste alignée.
         Text(
             text = album.name,
-            modifier = Modifier.padding(top = 6.dp),
+            modifier = Modifier.padding(top = 6.dp).heightIn(min = 34.dp),
             style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )

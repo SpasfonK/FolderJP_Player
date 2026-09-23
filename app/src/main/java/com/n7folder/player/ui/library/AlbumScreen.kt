@@ -55,6 +55,7 @@ fun AlbumScreen(
                 Row(modifier = Modifier.fillMaxWidth().padding(start = 8.dp, top = 4.dp, bottom = 8.dp)) {
                     AlbumArt(
                         album = album,
+                        artistName = artist.name,
                         modifier = Modifier.size(132.dp).clip(RoundedCornerShape(12.dp))
                     )
                     Spacer(modifier = Modifier.width(14.dp))
